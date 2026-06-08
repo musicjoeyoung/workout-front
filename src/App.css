@@ -231,6 +231,10 @@
   cursor: pointer;
 }
 
+.secondary-button {
+  background: var(--accent);
+}
+
 .inline-link-button {
   display: inline-flex;
   align-items: center;

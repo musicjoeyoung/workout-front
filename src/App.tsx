@@ -7,6 +7,7 @@ import {
   getPlanPreview,
   getRoadmap,
   getStravaConnectUrl,
+  syncStravaActivities,
   type BootstrapResponse,
   type CoachPreviewRequest,
   type CoachPreviewResponse,
@@ -15,6 +16,7 @@ import {
   type RoadmapResponse,
   type StravaConnectResponse,
   type StravaExchangeResponse,
+  type StravaSyncResponse,
 } from './lib/api'
 
 const initialPlanPreviewRequest: PlanPreviewRequest = {
@@ -106,6 +108,7 @@ function App() {
   const [stravaExchange, setStravaExchange] = useState<StravaExchangeResponse | null>(
     null,
   )
+  const [stravaSync, setStravaSync] = useState<StravaSyncResponse | null>(null)
   const [stravaUserId, setStravaUserId] = useState(
     '550e8400-e29b-41d4-a716-446655440000',
   )
@@ -116,6 +119,7 @@ function App() {
   const [isCoachLoading, setIsCoachLoading] = useState(false)
   const [isStravaLoading, setIsStravaLoading] = useState(false)
   const [isCallbackLoading, setIsCallbackLoading] = useState(false)
+  const [isStravaSyncLoading, setIsStravaSyncLoading] = useState(false)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -262,6 +266,26 @@ function App() {
       )
     } finally {
       setIsStravaLoading(false)
+    }
+  }
+
+  const runStravaSync = async () => {
+    setIsStravaSyncLoading(true)
+    setError(null)
+
+    try {
+      const response = await syncStravaActivities({
+        userId: stravaUserId,
+      })
+      setStravaSync(response)
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to sync Strava activities.',
+      )
+    } finally {
+      setIsStravaSyncLoading(false)
     }
   }
 
@@ -607,6 +631,13 @@ function App() {
           >
             {isStravaLoading ? 'Generating...' : 'Generate Strava connect URL'}
           </button>
+          <button
+            type="button"
+            className="retry-button secondary-button"
+            onClick={() => void runStravaSync()}
+          >
+            {isStravaSyncLoading ? 'Syncing...' : 'Sync Strava activities'}
+          </button>
           {stravaConnect ? (
             <a
               className="inline-link-button"
@@ -636,6 +667,19 @@ function App() {
             <p>User UUID from state: {stravaExchange.userId ?? 'not provided'}</p>
             <p>Token persistence: {stravaExchange.persistence}</p>
             <p>{stravaExchange.nextAction}</p>
+          </div>
+        ) : null}
+        {stravaSync ? (
+          <div className="mini-panel callback-panel">
+            <h3>Latest sync result</h3>
+            <p>Imported activities: {stravaSync.importedCount}</p>
+            <ul>
+              {stravaSync.activities.map((activity) => (
+                <li key={activity.stravaActivityId}>
+                  {activity.title} · {activity.activityType}
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
       </section>

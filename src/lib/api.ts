@@ -162,6 +162,22 @@ export type StravaExchangeResponse = {
   nextAction: string;
 };
 
+export type StravaSyncRequest = {
+  userId: string;
+  after?: string;
+};
+
+export type StravaSyncResponse = {
+  importedCount: number;
+  userId: string;
+  activities: Array<{
+    stravaActivityId: string;
+    title: string;
+    activityType: string;
+    startedAt: string;
+  }>;
+};
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 const getApiUrl = (path: string) => `${API_BASE_URL}${path}`;
@@ -205,6 +221,12 @@ export const getStravaConnectUrl = (payload: StravaConnectRequest) =>
 
 export const exchangeStravaCode = (payload: StravaExchangeRequest) =>
   fetchJson<StravaExchangeResponse>("/api/strava/exchange", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const syncStravaActivities = (payload: StravaSyncRequest) =>
+  fetchJson<StravaSyncResponse>("/api/strava/sync", {
     method: "POST",
     body: JSON.stringify(payload),
   });
