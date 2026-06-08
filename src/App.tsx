@@ -1,23 +1,62 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import {
   exchangeStravaCode,
   getBootstrap,
-  getCoachPreview,
   getPlanPreview,
-  getRoadmap,
   getStravaConnectUrl,
   syncStravaActivities,
   type BootstrapResponse,
-  type CoachPreviewRequest,
-  type CoachPreviewResponse,
   type PlanPreviewRequest,
   type PlanPreviewResponse,
-  type RoadmapResponse,
   type StravaConnectResponse,
   type StravaExchangeResponse,
   type StravaSyncResponse,
 } from './lib/api'
+
+type PreferredTime = 'morning' | 'midday' | 'evening'
+
+const equipmentOptions = [
+  { value: 'outdoor_running', label: 'Outdoor running' },
+  { value: 'peloton', label: 'Peloton' },
+  { value: 'dumbbells', label: 'Dumbbells' },
+  { value: 'rower', label: 'Rower' },
+  { value: 'gym', label: 'Gym' },
+  { value: 'mobility', label: 'Mobility' },
+] as const
+
+const weekDays = [
+  { label: 'Sun', name: 'Sunday' },
+  { label: 'Mon', name: 'Monday' },
+  { label: 'Tue', name: 'Tuesday' },
+  { label: 'Wed', name: 'Wednesday' },
+  { label: 'Thu', name: 'Thursday' },
+  { label: 'Fri', name: 'Friday' },
+  { label: 'Sat', name: 'Saturday' },
+] as const
+
+const trainingDayOrder = [2, 4, 6, 0, 1, 3, 5] as const
+
+const buildAvailability = (
+  weeklyWorkoutTarget: number,
+  preferredTime: PreferredTime,
+): PlanPreviewRequest['availability'] => {
+  const timeConfig = {
+    morning: { startMinute: 390, endMinute: 450, label: 'Morning session' },
+    midday: { startMinute: 720, endMinute: 780, label: 'Midday session' },
+    evening: { startMinute: 1080, endMinute: 1140, label: 'Evening session' },
+  }[preferredTime]
+
+  return trainingDayOrder.slice(0, weeklyWorkoutTarget).map((dayOfWeek) => ({
+    label: `${weekDays[dayOfWeek].name} ${timeConfig.label}`,
+    dayOfWeek,
+    startMinute: timeConfig.startMinute,
+    endMinute: timeConfig.endMinute,
+    partOfDay: preferredTime,
+  }))
+}
+
+const initialPreferredTime: PreferredTime = 'morning'
 
 const initialPlanPreviewRequest: PlanPreviewRequest = {
   profile: {
@@ -31,40 +70,12 @@ const initialPlanPreviewRequest: PlanPreviewRequest = {
   goal: {
     goalType: 'race',
     activityType: 'running',
-    summary: 'Run a half marathon in October',
+    summary:
+      'I can work out in the morning, I have a Peloton and dumbbells, and I want to become a stronger runner.',
     targetDate: '2026-10-12',
   },
-  availability: [
-    {
-      label: 'Early Tuesday',
-      dayOfWeek: 2,
-      startMinute: 390,
-      endMinute: 450,
-      partOfDay: 'morning',
-    },
-    {
-      label: 'Thursday lunch',
-      dayOfWeek: 4,
-      startMinute: 720,
-      endMinute: 780,
-      partOfDay: 'midday',
-    },
-    {
-      label: 'Saturday long session',
-      dayOfWeek: 6,
-      startMinute: 480,
-      endMinute: 600,
-      partOfDay: 'morning',
-    },
-    {
-      label: 'Sunday recovery',
-      dayOfWeek: 0,
-      startMinute: 540,
-      endMinute: 600,
-      partOfDay: 'morning',
-    },
-  ],
-  equipment: ['outdoor_running', 'dumbbells', 'mobility'],
+  availability: buildAvailability(4, initialPreferredTime),
+  equipment: ['outdoor_running', 'peloton', 'dumbbells'],
   preferences: [
     {
       activityType: 'running',
@@ -73,35 +84,18 @@ const initialPlanPreviewRequest: PlanPreviewRequest = {
   ],
 }
 
-const initialCoachPreviewRequest: CoachPreviewRequest = {
-  athleteName: 'Jordan',
-  message:
-    'I only slept five hours and my legs feel sore. Should I still do today’s interval run?',
-  sleepHours: 5,
-  availableMinutes: 30,
-  soreness: true,
-  currentWorkout: {
-    title: 'Interval run',
-    activityType: 'running',
-    durationMinutes: 45,
-    intensity: 'Moderate to hard',
-    rationale: 'Targets half-marathon speed development.',
-  },
-}
+const formatActivityDate = (startedAt: string) =>
+  new Date(startedAt).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
 
 function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null)
-  const [roadmap, setRoadmap] = useState<RoadmapResponse | null>(null)
   const [planForm, setPlanForm] = useState<PlanPreviewRequest>(
     initialPlanPreviewRequest,
   )
-  const [coachForm, setCoachForm] = useState<CoachPreviewRequest>(
-    initialCoachPreviewRequest,
-  )
   const [planPreview, setPlanPreview] = useState<PlanPreviewResponse | null>(null)
-  const [coachPreview, setCoachPreview] = useState<CoachPreviewResponse | null>(
-    null,
-  )
   const [stravaConnect, setStravaConnect] = useState<StravaConnectResponse | null>(
     null,
   )
@@ -113,10 +107,11 @@ function App() {
     '550e8400-e29b-41d4-a716-446655440000',
   )
   const [stravaRedirectUri, setStravaRedirectUri] = useState('')
+  const [preferredTime, setPreferredTime] =
+    useState<PreferredTime>(initialPreferredTime)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isPlanLoading, setIsPlanLoading] = useState(false)
-  const [isCoachLoading, setIsCoachLoading] = useState(false)
   const [isStravaLoading, setIsStravaLoading] = useState(false)
   const [isCallbackLoading, setIsCallbackLoading] = useState(false)
   const [isStravaSyncLoading, setIsStravaSyncLoading] = useState(false)
@@ -126,18 +121,13 @@ function App() {
     setError(null)
 
     try {
-      const [bootstrapData, roadmapData, planPreviewData, coachPreviewData] =
-        await Promise.all([
-          getBootstrap(),
-          getRoadmap(),
-          getPlanPreview(initialPlanPreviewRequest),
-          getCoachPreview(initialCoachPreviewRequest),
-        ])
+      const [bootstrapData, planPreviewData] = await Promise.all([
+        getBootstrap(),
+        getPlanPreview(initialPlanPreviewRequest),
+      ])
 
       setBootstrap(bootstrapData)
-      setRoadmap(roadmapData)
       setPlanPreview(planPreviewData)
-      setCoachPreview(coachPreviewData)
       setStravaRedirectUri(
         bootstrapData.integrations.strava.redirectUri ??
           (typeof window !== 'undefined' ? window.location.origin : ''),
@@ -146,7 +136,7 @@ function App() {
       setError(
         loadError instanceof Error
           ? loadError.message
-          : 'Unable to load workout app data.',
+          : 'Unable to load workout planner data.',
       )
     } finally {
       setIsLoading(false)
@@ -184,6 +174,9 @@ function App() {
             bootstrap.integrations.strava.redirectUri ?? window.location.origin,
         })
         setStravaExchange(exchange)
+        if (exchange.userId) {
+          setStravaUserId(exchange.userId)
+        }
         window.history.replaceState({}, '', window.location.pathname)
       } catch (exchangeError) {
         setError(
@@ -199,19 +192,6 @@ function App() {
     void runExchange()
   }, [bootstrap])
 
-  const updateAvailability = (
-    index: number,
-    key: keyof PlanPreviewRequest['availability'][number],
-    value: number | string,
-  ) => {
-    setPlanForm((current) => ({
-      ...current,
-      availability: current.availability.map((window, windowIndex) =>
-        windowIndex === index ? { ...window, [key]: value } : window,
-      ),
-    }))
-  }
-
   const submitPlanPreview = async () => {
     setIsPlanLoading(true)
     setError(null)
@@ -223,28 +203,10 @@ function App() {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : 'Unable to generate the adaptive week preview.',
+          : 'Unable to generate the workout plan.',
       )
     } finally {
       setIsPlanLoading(false)
-    }
-  }
-
-  const submitCoachPreview = async () => {
-    setIsCoachLoading(true)
-    setError(null)
-
-    try {
-      const preview = await getCoachPreview(coachForm)
-      setCoachPreview(preview)
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Unable to get a coaching response.',
-      )
-    } finally {
-      setIsCoachLoading(false)
     }
   }
 
@@ -289,97 +251,168 @@ function App() {
     }
   }
 
+  const toggleEquipment = (equipment: string) => {
+    setPlanForm((current) => {
+      const nextEquipment = current.equipment.includes(equipment)
+        ? current.equipment.filter((item) => item !== equipment)
+        : [...current.equipment, equipment]
+
+      return {
+        ...current,
+        equipment: nextEquipment,
+      }
+    })
+  }
+
+  const calendarDays = useMemo(() => {
+    const workoutsByDay = new Map(
+      (planPreview?.workouts ?? []).map((workout) => [workout.dayLabel, workout]),
+    )
+
+    return weekDays.map((day) => ({
+      ...day,
+      workout: workoutsByDay.get(day.label) ?? null,
+    }))
+  }, [planPreview])
+
   if (isLoading) {
     return (
       <main className="app-shell">
-        <section className="hero">
-          <div className="eyebrow">Loading live contracts</div>
+        <section className="page-header">
+          <p className="kicker">Loading workout planner</p>
           <h1>Workout Planner</h1>
-          <p className="hero-copy">
-            Pulling bootstrap metadata, roadmap milestones, adaptive plan output,
-            and coach guidance from the backend.
-          </p>
         </section>
       </main>
     )
   }
 
-  if ((!bootstrap || !roadmap || !planPreview || !coachPreview) && error) {
+  if (!bootstrap || !planPreview) {
     return (
       <main className="app-shell">
-        <section className="panel error-panel">
-          <div className="section-label">Backend connection issue</div>
+        <section className="panel">
+          <p className="kicker">Unable to load app</p>
           <h1>Workout Planner</h1>
-          <p>{error ?? 'Unable to load app data.'}</p>
-          <button
-            type="button"
-            className="retry-button"
-            onClick={() => void loadData()}
-          >
-            Retry loading
+          <p>{error ?? 'Something went wrong.'}</p>
+          <button type="button" className="button" onClick={() => void loadData()}>
+            Retry
           </button>
         </section>
       </main>
     )
   }
 
-  if (!bootstrap || !roadmap || !planPreview || !coachPreview) {
-    return null
-  }
-
-  const stravaStatus = bootstrap.integrations.strava
-  const currentMilestone = roadmap.milestones.find(
-    (milestone) => milestone.id === roadmap.summary.mvpTarget,
-  )
-
   return (
     <main className="app-shell">
-      <section className="hero">
-        <div className="eyebrow">Interactive OAuth-ready MVP shell</div>
+      <section className="page-header">
+        <p className="kicker">Minimal adaptive training planner</p>
         <h1>{bootstrap.app.name}</h1>
-        <p className="hero-copy">
-          The frontend now edits request payloads, launches the Strava OAuth flow,
-          handles callback query params, and renders live responses from the
-          workout API.
+        <p className="page-copy">
+          Connect Strava, describe the kind of athlete you want to become, and
+          review the AI-generated week in one place.
         </p>
-        <div className="hero-actions">
-          <a href="#strava">Strava connection</a>
-          <a href="#preview" className="secondary">
-            Adaptive week preview
-          </a>
-        </div>
-      </section>
-
-      <section className="card-grid" aria-label="Live product metadata">
-        <article className="card">
-          <h2>MVP target</h2>
-          <p>
-            {currentMilestone?.label}: {currentMilestone?.title}
-          </p>
-        </article>
-        <article className="card">
-          <h2>Strava status</h2>
-          <p>{stravaStatus.configured ? 'Configured' : 'Configuration missing'}</p>
-        </article>
-        <article className="card">
-          <h2>Coach engine</h2>
-          <p>{coachPreview.aiContract.provider}</p>
-        </article>
       </section>
 
       {error ? (
-        <section className="panel error-panel">
-          <div className="section-label">Request status</div>
+        <section className="panel panel-error">
           <p>{error}</p>
         </section>
       ) : null}
 
-      <section className="panel" id="onboarding">
-        <div className="section-label">Interactive planner inputs</div>
-        <h2>Generate an adaptive week from editable form data</h2>
+      <section className="panel section-stack" id="strava">
+        <div className="section-heading">
+          <div>
+            <p className="kicker">Strava workouts</p>
+            <h2>Recent imported activity</h2>
+          </div>
+          <p className="section-meta">
+            {bootstrap.integrations.strava.configured
+              ? 'Strava is configured.'
+              : 'Strava configuration is incomplete.'}
+          </p>
+        </div>
+
+        <div className="compact-controls">
+          <label className="field">
+            <span>User ID</span>
+            <input
+              value={stravaUserId}
+              onChange={(event) => setStravaUserId(event.target.value)}
+            />
+          </label>
+          <div className="button-row">
+            <button
+              type="button"
+              className="button"
+              onClick={() => void generateStravaConnectUrl()}
+            >
+              {isStravaLoading ? 'Preparing...' : 'Connect Strava'}
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => void runStravaSync()}
+            >
+              {isStravaSyncLoading ? 'Syncing...' : 'Sync workouts'}
+            </button>
+          </div>
+        </div>
+
+        {stravaConnect ? (
+          <a
+            className="inline-link"
+            href={stravaConnect.authUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open Strava authorization
+          </a>
+        ) : null}
+
+        {isCallbackLoading ? <p className="section-meta">Finishing Strava connection…</p> : null}
+
+        {stravaExchange ? (
+          <div className="status-card">
+            <strong>
+              Connected as{' '}
+              {stravaExchange.athlete.firstname ?? stravaExchange.athlete.username ?? 'athlete'}
+            </strong>
+            <p>
+              {stravaExchange.athlete.username
+                ? `@${stravaExchange.athlete.username}`
+                : 'Username not available'}
+            </p>
+          </div>
+        ) : null}
+
+        <div className="activity-list">
+          {stravaSync?.activities.length ? (
+            stravaSync.activities.map((activity) => (
+              <article className="activity-card" key={activity.stravaActivityId}>
+                <p className="activity-date">{formatActivityDate(activity.startedAt)}</p>
+                <h3>{activity.title}</h3>
+                <p className="activity-type">{activity.activityType.replace('_', ' ')}</p>
+              </article>
+            ))
+          ) : (
+            <article className="activity-card activity-card-empty">
+              <h3>No workouts synced yet</h3>
+              <p>Connect Strava and run a sync to populate this section.</p>
+            </article>
+          )}
+        </div>
+      </section>
+
+      <section className="panel section-stack" id="goals">
+        <div className="section-heading">
+          <div>
+            <p className="kicker">Goals and specifics</p>
+            <h2>Tell the planner what matters</h2>
+          </div>
+        </div>
+
         <div className="form-grid">
           <label className="field">
-            <span>Display name</span>
+            <span>Name</span>
             <input
               value={planForm.profile.displayName}
               onChange={(event) =>
@@ -390,20 +423,101 @@ function App() {
               }
             />
           </label>
+
           <label className="field">
-            <span>Email</span>
-            <input
-              value={planForm.profile.email}
+            <span>Primary focus</span>
+            <select
+              value={planForm.goal.activityType ?? 'running'}
+              onChange={(event) => {
+                const activityType =
+                  event.target.value as NonNullable<
+                    PlanPreviewRequest['goal']['activityType']
+                  >
+
+                setPlanForm((current) => ({
+                  ...current,
+                  goal: { ...current.goal, activityType },
+                  preferences: [{ activityType, preferenceLevel: 'love' }],
+                }))
+              }}
+            >
+              <option value="running">Running</option>
+              <option value="cycling">Cycling</option>
+              <option value="rowing">Rowing</option>
+              <option value="strength">Strength</option>
+              <option value="cross_training">Cross-training</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Goal type</span>
+            <select
+              value={planForm.goal.goalType}
               onChange={(event) =>
                 setPlanForm((current) => ({
                   ...current,
-                  profile: { ...current.profile, email: event.target.value },
+                  goal: {
+                    ...current.goal,
+                    goalType:
+                      event.target.value as PlanPreviewRequest['goal']['goalType'],
+                  },
                 }))
               }
+            >
+              <option value="race">Race</option>
+              <option value="pace">Pace</option>
+              <option value="consistency">Consistency</option>
+              <option value="weight_loss">Weight loss</option>
+              <option value="general_fitness">General fitness</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Preferred workout time</span>
+            <select
+              value={preferredTime}
+              onChange={(event) => {
+                const nextPreferredTime = event.target.value as PreferredTime
+                setPreferredTime(nextPreferredTime)
+                setPlanForm((current) => ({
+                  ...current,
+                  availability: buildAvailability(
+                    current.profile.weeklyWorkoutTarget,
+                    nextPreferredTime,
+                  ),
+                }))
+              }}
+            >
+              <option value="morning">Morning</option>
+              <option value="midday">Midday</option>
+              <option value="evening">Evening</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Workouts per week</span>
+            <input
+              type="number"
+              min={1}
+              max={7}
+              value={planForm.profile.weeklyWorkoutTarget}
+              onChange={(event) => {
+                const weeklyWorkoutTarget = Math.max(
+                  1,
+                  Math.min(7, Number(event.target.value) || 1),
+                )
+
+                setPlanForm((current) => ({
+                  ...current,
+                  profile: { ...current.profile, weeklyWorkoutTarget },
+                  availability: buildAvailability(weeklyWorkoutTarget, preferredTime),
+                }))
+              }}
             />
           </label>
+
           <label className="field">
-            <span>Fitness experience</span>
+            <span>Experience</span>
             <select
               value={planForm.profile.fitnessExperience}
               onChange={(event) =>
@@ -422,27 +536,11 @@ function App() {
               <option value="advanced">Advanced</option>
             </select>
           </label>
-          <label className="field">
-            <span>Weekly workout target</span>
-            <input
-              type="number"
-              min="1"
-              max="7"
-              value={planForm.profile.weeklyWorkoutTarget}
-              onChange={(event) =>
-                setPlanForm((current) => ({
-                  ...current,
-                  profile: {
-                    ...current.profile,
-                    weeklyWorkoutTarget: Number(event.target.value),
-                  },
-                }))
-              }
-            />
-          </label>
+
           <label className="field field-full">
-            <span>Goal summary</span>
-            <input
+            <span>Goal details and specifics</span>
+            <textarea
+              rows={4}
               value={planForm.goal.summary}
               onChange={(event) =>
                 setPlanForm((current) => ({
@@ -452,35 +550,7 @@ function App() {
               }
             />
           </label>
-          <label className="field">
-            <span>Goal activity</span>
-            <select
-              value={planForm.goal.activityType ?? 'running'}
-              onChange={(event) =>
-                setPlanForm((current) => ({
-                  ...current,
-                  goal: {
-                    ...current.goal,
-                    activityType:
-                      event.target.value as NonNullable<
-                        PlanPreviewRequest['goal']['activityType']
-                      >,
-                  },
-                  preferences: current.preferences.map((preference, index) =>
-                    index === 0
-                      ? { ...preference, activityType: event.target.value }
-                      : preference,
-                  ),
-                }))
-              }
-            >
-              {bootstrap.planning.supportedActivities.map((activity) => (
-                <option key={activity} value={activity}>
-                  {activity.replace('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
+
           <label className="field">
             <span>Target date</span>
             <input
@@ -489,371 +559,69 @@ function App() {
               onChange={(event) =>
                 setPlanForm((current) => ({
                   ...current,
-                  goal: { ...current.goal, targetDate: event.target.value },
-                }))
-              }
-            />
-          </label>
-          <label className="field field-full">
-            <span>Equipment (comma separated)</span>
-            <input
-              value={planForm.equipment.join(', ')}
-              onChange={(event) =>
-                setPlanForm((current) => ({
-                  ...current,
-                  equipment: event.target.value
-                    .split(',')
-                    .map((item) => item.trim())
-                    .filter(Boolean),
+                  goal: {
+                    ...current.goal,
+                    targetDate: event.target.value || undefined,
+                  },
                 }))
               }
             />
           </label>
         </div>
-        <div className="availability-grid">
-          {planForm.availability.map((window, index) => (
-            <article className="mini-panel" key={`${window.label}-${index}`}>
-              <h3>{window.label}</h3>
-              <div className="form-grid compact-grid">
-                <label className="field">
-                  <span>Day</span>
-                  <select
-                    value={window.dayOfWeek}
-                    onChange={(event) =>
-                      updateAvailability(index, 'dayOfWeek', Number(event.target.value))
-                    }
-                  >
-                    <option value="0">Sun</option>
-                    <option value="1">Mon</option>
-                    <option value="2">Tue</option>
-                    <option value="3">Wed</option>
-                    <option value="4">Thu</option>
-                    <option value="5">Fri</option>
-                    <option value="6">Sat</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Start minute</span>
-                  <input
-                    type="number"
-                    value={window.startMinute}
-                    onChange={(event) =>
-                      updateAvailability(index, 'startMinute', Number(event.target.value))
-                    }
-                  />
-                </label>
-                <label className="field">
-                  <span>End minute</span>
-                  <input
-                    type="number"
-                    value={window.endMinute}
-                    onChange={(event) =>
-                      updateAvailability(index, 'endMinute', Number(event.target.value))
-                    }
-                  />
-                </label>
+
+        <div className="equipment-list">
+          {equipmentOptions.map((equipment) => (
+            <label className="equipment-chip" key={equipment.value}>
+              <input
+                type="checkbox"
+                checked={planForm.equipment.includes(equipment.value)}
+                onChange={() => toggleEquipment(equipment.value)}
+              />
+              <span>{equipment.label}</span>
+            </label>
+          ))}
+        </div>
+
+        <button type="button" className="button" onClick={() => void submitPlanPreview()}>
+          {isPlanLoading ? 'Generating...' : 'Generate plan'}
+        </button>
+      </section>
+
+      <section className="panel section-stack" id="plan">
+        <div className="section-heading">
+          <div>
+            <p className="kicker">AI-prescribed workouts</p>
+            <h2>This week’s plan</h2>
+          </div>
+        </div>
+
+        <div className="plan-summary">
+          <p>{planPreview.focusSummary}</p>
+          <p>{planPreview.recoveryGuidance}</p>
+        </div>
+
+        <div className="calendar-grid">
+          {calendarDays.map((day) => (
+            <article className="calendar-day" key={day.label}>
+              <div className="calendar-day-head">
+                <span>{day.label}</span>
+                <small>{day.name}</small>
               </div>
-            </article>
-          ))}
-        </div>
-        <div className="button-row">
-          <button
-            type="button"
-            className="retry-button"
-            onClick={() => void submitPlanPreview()}
-          >
-            {isPlanLoading ? 'Generating...' : 'Generate adaptive week'}
-          </button>
-        </div>
-      </section>
 
-      <section className="two-column">
-        <article className="panel">
-          <div className="section-label">Live planning metadata</div>
-          <h2>What the backend says this planner supports</h2>
-          <div className="tag-list">
-            {bootstrap.planning.supportedActivities.map((activity) => (
-              <span className="tag" key={activity}>
-                {activity.replace('_', ' ')}
-              </span>
-            ))}
-          </div>
-          <p className="panel-copy">
-            Supported goals: {bootstrap.planning.supportedGoals.join(', ')}.
-          </p>
-        </article>
-
-        <article className="panel">
-          <div className="section-label">Coach prompts</div>
-          <h2>Seed questions from the bootstrap contract</h2>
-          <ul>
-            {bootstrap.coachPrompts.map((prompt) => (
-              <li key={prompt}>{prompt}</li>
-            ))}
-          </ul>
-        </article>
-      </section>
-
-      <section className="panel" id="strava">
-        <div className="section-label">Strava OAuth flow</div>
-        <h2>Generate and complete the Strava connect loop</h2>
-        <p className="panel-copy">
-          Backend redirect URI: <strong>{stravaStatus.redirectUri ?? 'not set'}</strong>
-        </p>
-        <div className="tag-list">
-          {stravaStatus.capabilities.map((capability) => (
-            <span className="tag" key={capability}>
-              {capability}
-            </span>
-          ))}
-        </div>
-        <div className="form-grid compact-grid">
-          <label className="field field-full">
-            <span>User UUID</span>
-            <input
-              value={stravaUserId}
-              onChange={(event) => setStravaUserId(event.target.value)}
-            />
-          </label>
-          <label className="field field-full">
-            <span>Redirect URI</span>
-            <input
-              value={stravaRedirectUri}
-              onChange={(event) => setStravaRedirectUri(event.target.value)}
-            />
-          </label>
-        </div>
-        <div className="button-row">
-          <button
-            type="button"
-            className="retry-button"
-            onClick={() => void generateStravaConnectUrl()}
-          >
-            {isStravaLoading ? 'Generating...' : 'Generate Strava connect URL'}
-          </button>
-          <button
-            type="button"
-            className="retry-button secondary-button"
-            onClick={() => void runStravaSync()}
-          >
-            {isStravaSyncLoading ? 'Syncing...' : 'Sync Strava activities'}
-          </button>
-          {stravaConnect ? (
-            <a
-              className="inline-link-button"
-              href={stravaConnect.authUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open Strava authorization
-            </a>
-          ) : null}
-        </div>
-        {stravaConnect ? (
-          <p className="panel-copy">
-            Generated redirect URI: <strong>{stravaConnect.redirectUri}</strong>
-          </p>
-        ) : null}
-        {isCallbackLoading ? (
-          <p className="panel-copy">Completing Strava callback exchange...</p>
-        ) : null}
-        {stravaExchange ? (
-          <div className="mini-panel callback-panel">
-            <h3>Latest callback result</h3>
-            <p>
-              Connected athlete: {stravaExchange.athlete.firstname ?? ''}{' '}
-              {stravaExchange.athlete.lastname ?? ''} ({stravaExchange.athlete.username ?? 'no username'})
-            </p>
-            <p>User UUID from state: {stravaExchange.userId ?? 'not provided'}</p>
-            <p>Token persistence: {stravaExchange.persistence}</p>
-            <p>{stravaExchange.nextAction}</p>
-          </div>
-        ) : null}
-        {stravaSync ? (
-          <div className="mini-panel callback-panel">
-            <h3>Latest sync result</h3>
-            <p>Imported activities: {stravaSync.importedCount}</p>
-            <ul>
-              {stravaSync.activities.map((activity) => (
-                <li key={activity.stravaActivityId}>
-                  {activity.title} · {activity.activityType}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="panel">
-        <div className="section-label">Coach response preview</div>
-        <h2>Ask the coach with editable inputs</h2>
-        <div className="form-grid">
-          <label className="field">
-            <span>Athlete name</span>
-            <input
-              value={coachForm.athleteName}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  athleteName: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Sleep hours</span>
-            <input
-              type="number"
-              min="0"
-              max="24"
-              value={coachForm.sleepHours ?? ''}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  sleepHours:
-                    event.target.value === ''
-                      ? undefined
-                      : Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Available minutes</span>
-            <input
-              type="number"
-              min="1"
-              value={coachForm.availableMinutes ?? ''}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  availableMinutes:
-                    event.target.value === ''
-                      ? undefined
-                      : Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label className="field checkbox-field">
-            <span>Soreness reported</span>
-            <input
-              type="checkbox"
-              checked={coachForm.soreness ?? false}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  soreness: event.target.checked,
-                }))
-              }
-            />
-          </label>
-          <label className="field field-full">
-            <span>Question</span>
-            <textarea
-              rows={3}
-              value={coachForm.message}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  message: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Current workout</span>
-            <input
-              value={coachForm.currentWorkout.title}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  currentWorkout: {
-                    ...current.currentWorkout,
-                    title: event.target.value,
-                  },
-                }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>Current duration</span>
-            <input
-              type="number"
-              min="1"
-              value={coachForm.currentWorkout.durationMinutes}
-              onChange={(event) =>
-                setCoachForm((current) => ({
-                  ...current,
-                  currentWorkout: {
-                    ...current.currentWorkout,
-                    durationMinutes: Number(event.target.value),
-                  },
-                }))
-              }
-            />
-          </label>
-        </div>
-        <div className="button-row">
-          <button
-            type="button"
-            className="retry-button"
-            onClick={() => void submitCoachPreview()}
-          >
-            {isCoachLoading ? 'Asking coach...' : 'Ask coach'}
-          </button>
-        </div>
-        <div className="two-column">
-          <article className="mini-panel">
-            <h3>Coach response</h3>
-            <p>{coachPreview.responseMessage}</p>
-            <p className="coach-workout">
-              {coachPreview.updatedWorkout.title} ·{' '}
-              {coachPreview.updatedWorkout.durationMinutes} minutes ·{' '}
-              {coachPreview.updatedWorkout.intensity}
-            </p>
-          </article>
-          <article className="mini-panel">
-            <h3>Decision context</h3>
-            <ul>
-              {coachPreview.rationale.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section className="panel" id="roadmap">
-        <div className="section-label">Delivery roadmap</div>
-        <h2>Sequenced milestones from the API</h2>
-        <div className="roadmap-grid">
-          {roadmap.milestones.map((milestone) => (
-            <article className="milestone-card" key={milestone.id}>
-              <p className="milestone-label">{milestone.label}</p>
-              <h3>{milestone.title}</h3>
-              <p className="milestone-status">{milestone.status}</p>
-              <p>{milestone.goal}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel" id="preview">
-        <div className="section-label">Generated week preview</div>
-        <h2>Live adaptive plan output</h2>
-        <p className="panel-copy">{planPreview.focusSummary}</p>
-        <p className="panel-copy">{planPreview.recoveryGuidance}</p>
-        <div className="week-grid">
-          {planPreview.workouts.map((workout) => (
-            <article className="week-card" key={`${workout.dayLabel}-${workout.title}`}>
-              <div className="week-day">{workout.dayLabel}</div>
-              <p className="week-window">{workout.timeWindow}</p>
-              <h3>{workout.title}</h3>
-              <p className="week-details">
-                {workout.durationMinutes} minutes · {workout.intensity}
-              </p>
-              <p className="week-reason">{workout.rationale}</p>
+              {day.workout ? (
+                <div className="calendar-workout">
+                  <h3>{day.workout.title}</h3>
+                  <p className="calendar-meta">
+                    {day.workout.timeWindow} · {day.workout.durationMinutes} min
+                  </p>
+                  <p className="calendar-meta">{day.workout.intensity}</p>
+                  <p>{day.workout.rationale}</p>
+                </div>
+              ) : (
+                <div className="calendar-rest">
+                  <p>Rest or unplanned day.</p>
+                </div>
+              )}
             </article>
           ))}
         </div>
